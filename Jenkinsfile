@@ -85,8 +85,13 @@ EOF
             steps {
                 script {
                     echo "Deploying to production using Docker Compose..."
+                    
+                    // 🌟 NEW ROBUSTNESS STEP: Forcefully remove named containers 
+                    // This resolves the "Conflict. The container name is already in use" error.
+                    echo "Forcefully removing any conflicting containers by name..."
+                    sh 'docker rm -f products_db products_api products_frontend products_phpmyadmin || true'
 
-                    // Stop existing containers
+                    // Stop existing services and optionally remove volumes
                     def downCommand = 'docker compose down'
                     if (params.CLEAN_VOLUMES) {
                         echo "WARNING: Removing volumes (database will be cleared)"
