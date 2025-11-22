@@ -1,146 +1,188 @@
 pipeline {
     agent any
-    
+
     triggers {
-        pollSCM('H/2 * * * *')  // Poll every 2 minutes
+        // Poll SCM as fallback if webhook fails
+        pollSCM('H/2 * * * *')
     }
-    
+
     environment {
+        // Build Information
         BUILD_TAG = "${env.BUILD_NUMBER}"
         GIT_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
     }
-    
+
     parameters {
-        booleanParam(name: 'CLEAN_VOLUMES', defaultValue: true, description: 'Remove volumes on rebuild')
-        string(name: 'API_HOST', defaultValue: 'http://192.168.56.1:3001', description: 'API host URL')
+        booleanParam(
+            name: 'CLEAN_VOLUMES',
+            defaultValue: true,
+            description: 'Remove volumes (clears database)'
+        )
+        string(
+            name: 'API_HOST',
+            defaultValue: 'http://192.168.56.1:3001',
+            description: 'API host URL for frontend to connect to.'
+        )
     }
-    
+
     stages {
         stage('Checkout') {
             steps {
                 script {
-                    echo "🔄 Checking out code from repository..."
+                    echo "Checking out code..."
                     checkout scm
-                    echo "✅ Code checked out successfully"
+                    echo "Deploying to production environment"
+                    echo "Build: ${BUILD_TAG}, Commit: ${GIT_COMMIT_SHORT}"
                 }
             }
         }
-        
-        stage('Validate Configuration') {
+
+        stage('Validate') {
             steps {
                 script {
-                    echo "🔍 Validating Docker Compose configuration..."
+                    echo "Validating Docker Compose configuration..."
                     sh 'docker compose config'
-                    echo "✅ Configuration is valid"
                 }
             }
         }
-        
+
         stage('Prepare Environment') {
             steps {
                 script {
-                    echo "📝 Preparing environment variables..."
+                    echo "Preparing environment configuration..."
+
+                    // Load credentials from Jenkins
                     withCredentials([
-                        string(credentialsId: 'MYSQL_ROOT_PASSWORD', variable: 'ROOT_PASS'),
-                        string(credentialsId: 'MYSQL_PASSWORD', variable: 'USER_PASS')
+                        string(credentialsId: 'MYSQL_ROOT_PASSWORD', variable: 'MYSQL_ROOT_PASS'),
+                        string(credentialsId: 'MYSQL_PASSWORD', variable: 'MYSQL_PASS')
                     ]) {
+                        // Create .env file
                         sh """
                             cat > .env <<EOF
-MYSQL_ROOT_PASSWORD=${ROOT_PASS}
+MYSQL_ROOT_PASSWORD=\${MYSQL_ROOT_PASS}
 MYSQL_DATABASE=products_db
 MYSQL_USER=products_user
-MYSQL_PASSWORD=${USER_PASS}
+MYSQL_PASSWORD=\${MYSQL_PASS}
 MYSQL_PORT=3306
 PHPMYADMIN_PORT=8888
 API_PORT=3001
 DB_PORT=3306
 FRONTEND_PORT=3000
+NODE_ENV=production
 API_HOST=${params.API_HOST}
 EOF
                         """
                     }
-                    echo "✅ Environment prepared"
+
+                    echo "Environment configuration created"
+                    // Don't print .env to avoid exposing passwords in logs
+                    sh 'echo ".env file created successfully"'
                 }
             }
         }
-        
-        stage('Stop Old Containers') {
-            steps {
-                script {
-                    echo "🛑 Stopping old containers..."
-                    def cmd = params.CLEAN_VOLUMES ? 'docker compose down -v' : 'docker compose down'
-                    sh cmd
-                    echo "✅ Old containers stopped"
-                }
-            }
-        }
-        
-        stage('Build Images') {
-            steps {
-                script {
-                    echo "🏗️ Building Docker images..."
-                    sh 'docker compose build --no-cache'
-                    echo "✅ Images built successfully"
-                }
-            }
-        }
-        
+
         stage('Deploy') {
             steps {
                 script {
-                    echo "🚀 Starting containers..."
-                    sh 'docker compose up -d'
-                    echo "✅ Containers started"
+                    echo "Deploying to production using Docker Compose..."
+
+                    // Stop existing containers
+                    def downCommand = 'docker compose down'
+                    if (params.CLEAN_VOLUMES) {
+                        echo "WARNING: Removing volumes (database will be cleared)"
+                        downCommand = 'docker compose down -v'
+                    }
+                    sh downCommand
+
+                    // Build and start services
+                    sh """
+                        docker compose build --no-cache
+                        docker compose up -d
+                    """
+
+                    echo "Deployment completed"
                 }
             }
         }
-        
+
         stage('Health Check') {
             steps {
                 script {
-                    echo "⏳ Waiting for services to be ready..."
+                    echo "Waiting for services to start..."
                     sh 'sleep 15'
-                    
-                    echo "🔍 Checking container status..."
-                    sh 'docker compose ps'
-                    
-                    echo "🏥 Testing API health endpoint..."
-                    sh 'timeout 60 bash -c "until curl -f http://localhost:3001/health; do sleep 2; done"'
-                    
-                    echo "📦 Testing products endpoint..."
-                    sh 'curl -f http://localhost:3001/products'
-                    
-                    echo "✅ All health checks passed!"
+
+                    echo "Performing health check..."
+
+                    sh """
+                        # Check if containers are running
+                        docker compose ps
+
+                        # Wait for API to be ready (max 60 seconds)
+                        timeout 60 bash -c 'until curl -f http://localhost:3001/health; do sleep 2; done' || exit 1
+
+                        # Check products endpoint
+                        curl -f http://localhost:3001/products || exit 1
+
+                        echo "Health check passed!"
+                    """
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo "Verifying all services..."
+
+                    sh """
+                        echo "=== Container Status ==="
+                        docker compose ps
+
+                        echo ""
+                        echo "=== Service Logs (last 20 lines) ==="
+                        docker compose logs --tail=20
+
+                        echo ""
+                        echo "=== Deployed Services ==="
+                        echo "Frontend: http://192.168.56.1:3000"
+                        echo "API: http://192.168.56.1:3001"
+                        echo "phpMyAdmin: http://192.168.56.1:8888"
+                    """
                 }
             }
         }
     }
-    
+
     post {
         success {
-            echo """
-            ✅ ============================================
-            ✅ DEPLOYMENT SUCCESSFUL!
-            ✅ ============================================
-            
-            🌐 Frontend: http://192.168.56.1:3000
-            🔌 API: http://192.168.56.1:3001
-            💾 phpMyAdmin: http://192.168.56.1:8888
-            
-            Build: #${env.BUILD_NUMBER}
-            Commit: ${env.GIT_COMMIT_SHORT}
-            ============================================
-            """
+            echo "✅ Deployment completed successfully!"
+            echo "Build: ${BUILD_TAG}"
+            echo "Commit: ${GIT_COMMIT_SHORT}"
+            echo ""
+            echo "Access your application:"
+            echo "  - Frontend: http://192.168.56.1:3000"
+            echo "  - API: http://192.168.56.1:3001"
+            echo "  - phpMyAdmin: http://192.168.56.1:8888"
         }
-        
+
         failure {
-            echo "❌ Deployment failed! Showing logs..."
-            sh 'docker compose logs --tail=50 || true'
+            echo "❌ Deployment failed!"
+
+            script {
+                echo "Printing container logs for debugging..."
+                sh 'docker compose logs --tail=50 || true'
+            }
         }
-        
+
         always {
-            echo "🧹 Cleaning up unused Docker images..."
-            sh 'docker image prune -f'
+            echo "Cleaning up old Docker resources..."
+            sh """
+                # Remove dangling images
+                docker image prune -f
+
+                # Remove old containers
+                docker container prune -f
+            """
         }
     }
 }
