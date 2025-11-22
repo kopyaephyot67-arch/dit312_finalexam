@@ -1,0 +1,14 @@
+node_modules/
+npm-debug.log*
+.env
+.env*.local
+!.env.example
+.next/
+out/
+build/
+.DS_Store
+Thumbs.db
+01_api/uploads/*
+!01_api/uploads/.gitkeep
+.vscode/
+.idea/

@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: products_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-products_db}
+      MYSQL_USER: ${MYSQL_USER:-products_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-products_pass}
+      TZ: Asia/Bangkok
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - stack
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin:latest
+    container_name: products_phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: db
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+    ports:
+      - "${PHPMYADMIN_PORT:-8888}:80"
+    depends_on:
+      - db
+    networks:
+      - stack
+
+  api:
+    build: ./01_api
+    container_name: products_api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${MYSQL_DATABASE:-products_db}
+      DB_USER: ${MYSQL_USER:-products_user}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-products_pass}
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./01_api/uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - stack
+
+  frontend:
+    build:
+      context: ./02_frontend
+      args:
+        API_HOST: ${API_HOST:-http://localhost:3001}
+    container_name: products_frontend
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_HOST=${API_HOST:-http://localhost:3001}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks:
+      - stack
+
+volumes:
+  mysql_data:
+
+networks:
+  stack:
+    driver: bridge
