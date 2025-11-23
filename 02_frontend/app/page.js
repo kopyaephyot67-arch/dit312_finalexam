@@ -62,7 +62,7 @@ export default function HomePage() {
   return (
     <div className="container">
       <header className="header">
-        <h1 className="title">🛍️ ShopHub Store</h1>
+        <h1 className="title">🛍️ ShopHub web</h1>
         <p className="subtitle">Browse, search, and manage products</p>
       </header>
 
